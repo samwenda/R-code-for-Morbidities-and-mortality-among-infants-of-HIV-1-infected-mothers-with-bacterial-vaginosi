@@ -1,0 +1,251 @@
+rm(list = ls())##clean the memory
+setwd("C:/Users/user/Desktop/restructureFRONTIERS")
+library(geepack)# perfoming GEE regression
+library(Greg)## displaying the odds ratio for GLM
+library(haven)#for importing spss datasets
+library(fmsb) #for odds ratio
+library(dplyr)##for data wrangling and manipulation
+library(lubridate)##for manipulating the dates
+library(survminer)##for survival curves
+library(survival)##for survival curves
+library(KMsurv)##for survival curves
+
+#####we create the bacterial vaginosis from the BV data. any value greater than 7 then positive for BV
+df1 <- read_sav("mbbv.sav") ##read the BV data
+df1_1<-select(df1, IDNUM, BV)  #subset df1 by selecting the BV measure only. It's a pH measures between 0 and 14
+df1_2<-df1_1[complete.cases(df1_1), ] #remove any NA or Missing data from the dataset
+df1_bv<-df1_2 %>% group_by(IDNUM)%>% summarise(BV=max(BV))  #--we want to work with the maximum BV values. assumption, if you have tested positive for BV then you are exposed
+df1_bv$IDNUM<-as.integer(df1_bv$IDNUM)  #convert to interger for joining with the morbidity dataset
+head(df1_bv)  ##the BV data with the pH values as intergers
+
+##############################################################
+########### PART 2 ###########################################
+##############################################################
+#####Next we read the infant morbidity dataset################
+#####which we will merge with the BV dataset above############
+#####then we analyse##########################################
+##############################################################
+##############################################################
+
+mbinfant <- read_sav("mbinfant.sav")#read the infant morbidity data
+mbneo <- read_sav("mbneo.sav")  ##read the neonates data
+mbneo$IWEIGHT<-mbneo$BIRTHWT/10  ##match weight in the two datasets
+mbneo$HEIGHT<-mbneo$LENGTH  #match height/length in the 2 datasets
+#merge the data to obtain W00(week Zero/birth) in mbinant and calculate the number of days
+mbInfNeo<-merge(mbinfant, mbneo, by =c("IDNUM","DAY","MONTH","YEAR","YEAR2K","VISIT","MB","MBNUM","PERIOD","TIME","IWEIGHT","HEIGHT"), all = TRUE, sort = TRUE)
+
+mbneo2 <- read_sav("mbneo2.sav")  ##load data with mortality information
+##get the age at death/survival
+mbneo2_dead<-mbneo2 %>% group_by(idnum,randgrp,deathage,dead,pcrpos,deathage,monthage) %>% summarise()
+mbneo2_dead_1<-mbneo2_dead %>% replace(is.na(.), -100)##replace NA with a unique small number to easen filtering
+##group by id and summarize
+mbd2a<-mbneo2_dead_1 %>% group_by(idnum) %>% summarise(dead=max(dead), hiv=max(pcrpos),rndgrp=max(randgrp),death_age=max(deathage), month_age=max(monthage))# %>% max_age=pmax(deathage, monthsage)
+##find survival age OR age at Death
+mbd2a$max_age<-with(mbd2a, pmax(death_age, month_age))  #get age at death/ survival upto the time
+mbd2<-mbd2a %>% mutate(age2=max_age*30)##convert the age months into days by multiplying by 30 days
+
+#########################################################
+colnames(mbd2)[1]<-"IDNUM"  #rename the first column from "idnum" to "IDNUM" to match the other datasets
+####join the selected data with deaths from mbne0 with the mbinfant
+mbd2$IDNUM<-as.integer(mbd2$IDNUM)
+dg1_1<-mbInfNeo %>% left_join(mbd2, by="IDNUM") ##use the function left_join to merge the 2 datasets
+
+##join the data with the BV data created above
+dg1<-dg1_1 %>% left_join(df1_bv, by="IDNUM") #merge bv
+
+
+#sorting with dates
+dg1$Date <- with(dg1, dmy(sprintf('%02d%02d%04d',DAY,MONTH,YEAR2K))) #convert the date into the R format of date
+dg3<-dg1 %>%  mutate(Date = ymd(Date))
+dg4<-dg3[with(dg3,order(IDNUM,Date)),]  ##ordering the dates in the data, so that they are properly arranged.from birth upto the last visit
+dg5<-dg4 %>% group_by(IDNUM) %>% mutate(diff2 = Date-first(Date))##find the difference in days between the visits
+
+##############################################################
+##############################################################
+########### PART 3 ###########################################
+##############################################################
+#####Next we Analyse data for the first 6months###############
+#####  data analysis for the 180 days(6months)    ############
+##############################################################
+##############################################################
+##############################################################
+##the first 180 days
+dg6<-dg5 %>% filter(diff2<180)  ##filter to remain with data for 180days
+dg6$bvyes<-ifelse(dg6$BV>=7,1,0)##if the pH is 7 or greater than 7 then they are positive for BV and 0 otherwise
+dg6$bvyes[is.na(dg6$bvyes)] <- -100 ##recode missing to -100 for filtering
+dg63<- dg6 %>% filter(bvyes>-1)  ###filter all -100 which were missing
+
+
+##our data for analysis is called dg63###
+
+#################################################
+####    Table 1 #################################
+#### We use simple logistic regression ##########
+###  Since there is no corelation to account for #
+#################################################
+
+#merge the neonates data with the BV data from women to calculate unadjusted odds ratios
+mbneo <- read_sav("mbneo.sav") #read the neonates data
+mbneo$IDNUM<-as.integer (mbneo$IDNUM)  #convert NEONATES id to interger for merging
+df1_bv$IDNUM<-as.integer(df1_bv$IDNUM)   #convert the mothers BV data to interger
+dh1<-mbneo %>% left_join(df1_bv, by="IDNUM")  #join the data sets
+dh1$BV[is.na(dh1$BV)]<--100  ##assign a large negative interger for ease of filtering
+dh2<- dh1 %>% filter(BV>-1) # filter all missing
+dh2$bvys<-ifelse(dh2$BV>=7,1,0)# recode the pH to numeric
+
+
+
+
+############dealing with continuous variables in table 1 ####
+
+dh2_0<-dh2 %>% filter(bvys==0) 
+dh2_1<-dh2 %>% filter(bvys==1) 
+
+mean(dh2_0$LENGTH, na.rm=TRUE) 
+mean(dh2_1$LENGTH, na.rm=TRUE) 
+stdev(dh2_0$LENGTH, na.rm=TRUE, unbiased=TRUE)
+stdev(dh2_1$LENGTH, na.rm=TRUE, unbiased=TRUE)
+
+range(dh2_0$LENGTH, na.rm=TRUE)
+range(dh2_1$LENGTH, na.rm=TRUE) 
+length(dh2_0$MB)
+
+## average BIRTHWT   
+mean(dh2_0$BIRTHWT, na.rm=TRUE) 
+mean(dh2_1$BIRTHWT, na.rm=TRUE) 
+range(dh2_0$BIRTHWT, na.rm=TRUE)
+range(dh2_1$BIRTHWT, na.rm=TRUE) 
+stdev(dh2_0$BIRTHWT, na.rm=TRUE, unbiased=TRUE)
+stdev(dh2_1$BIRTHWT, na.rm=TRUE, unbiased=TRUE)
+
+########no of days in hospital stay
+dh2_0 <- dh2[ which(dh2$bvys=='0'),]
+mean(dh2_0$HOSPSTAY, na.rm=TRUE) 
+stdev(dh2_0$HOSPSTAY, na.rm=TRUE, unbiased=TRUE)
+median(dh2_0$HOSPSTAY, na.rm=TRUE) 
+summary(dh2_0$HOSPSTAY, na.rm=TRUE)
+range(dh2_0$HOSPSTAY, na.rm=TRUE)
+
+sum(dh2_0$HOSPSTAY>0, na.rm = TRUE)  
+sum(dh2_1$HOSPSTAY>0, na.rm = TRUE)  
+
+dh2_1 <- dh2[ which(dh2$bvys=='1'),]
+mean(dh2_1$HOSPSTAY, na.rm=TRUE)  
+stdev(dh2_1$HOSPSTAY, na.rm=TRUE, unbiased=TRUE)
+range(dh2_1$HOSPSTAY, na.rm=TRUE)  
+
+##more than 24 hours in hospital
+sum(dh2_0$HOSP24HR, na.rm=TRUE)  
+sum(dh2_1$HOSP24HR, na.rm=TRUE) 
+
+###nsephis
+sum(dh2_0$NSEPSIS, na.rm=TRUE)  
+sum(dh2_1$NSEPSIS, na.rm=TRUE) 
+##MATCOND
+sum(dh2_0$MATCOND, na.rm=TRUE)  
+sum(dh2_1$MATCOND, na.rm=TRUE) 
+
+##NRASH 
+sum(dh2_0$NRASH, na.rm=TRUE)  
+sum(dh2_1$NRASH, na.rm=TRUE)
+
+#NLYMPHAD
+sum(dh2_0$NLYMPHAD, na.rm=TRUE)  
+sum(dh2_1$NLYMPHAD, na.rm=TRUE)
+##DISTRESS
+sum(dh2_0$DISTRESS, na.rm=TRUE)  
+sum(dh2_1$DISTRESS, na.rm=TRUE)
+
+## head circumfrence
+mean(dh2_0$NHCIRC, na.rm=TRUE) 
+mean(dh2_1$NHCIRC, na.rm=TRUE) 
+range(dh2_0$NHCIRC, na.rm=TRUE)
+range(dh2_1$NHCIRC, na.rm=TRUE) 
+stdev(dh2_0$NHCIRC, na.rm=TRUE, unbiased=TRUE)
+stdev(dh2_1$NHCIRC, na.rm=TRUE, unbiased=TRUE)
+
+##apgar score
+mean(dh2_0$APGAR, na.rm=TRUE)  
+mean(dh2_1$APGAR, na.rm=TRUE) 
+range(dh2_0$APGAR, na.rm=TRUE)
+range(dh2_1$APGAR, na.rm=TRUE) 
+stdev(dh2_0$APGAR, na.rm=TRUE, unbiased=TRUE)
+stdev(dh2_1$APGAR, na.rm=TRUE, unbiased=TRUE)
+
+##dubowitz score
+mean(dh2_0$DUBOWITZ, na.rm=TRUE) 
+mean(dh2_1$DUBOWITZ, na.rm=TRUE) 
+range(dh2_0$DUBOWITZ, na.rm=TRUE)
+range(dh2_1$DUBOWITZ, na.rm=TRUE) 
+stdev(dh2_0$DUBOWITZ, na.rm=TRUE, unbiased=TRUE)
+stdev(dh2_1$DUBOWITZ, na.rm=TRUE, unbiased=TRUE)
+
+
+##maturity
+mean(dh2_0$MATURITY, na.rm=TRUE) 
+mean(dh2_1$MATURITY, na.rm=TRUE) 
+range(dh2_0$MATURITY, na.rm=TRUE)
+range(dh2_1$MATURITY, na.rm=TRUE) 
+stdev(dh2_0$MATURITY, na.rm=TRUE, unbiased=TRUE)
+stdev(dh2_1$MATURITY, na.rm=TRUE, unbiased=TRUE)
+
+##jaundice
+sum(dh2_0$NJAUNDH, na.rm=TRUE) 
+sum(dh2_1$NJAUNDH, na.rm=TRUE) 
+
+##conjuviticus
+sum(dh2_0$NCONJUNC, na.rm=TRUE) 
+sum(dh2_1$NCONJUNC, na.rm=TRUE) 
+
+#########################glm model for neonates
+##run a simple logistic model to exctract unadjusted odds ratio
+mod4<-glm(bvys~DISTRESS+NSEPSIS+NRASH+NLYMPHAD+JAUNDICE+NCONJUNC, data =dh2,family = "binomial")
+
+printCrudeAndAdjustedModel(mod4)[-1,] #print odds ratio less intercept
+
+
+
+
+#################################################################
+####    Table 2 for the 180 days #################################
+#### We use GEE with indepedencecorrelation ######################
+###  Since there is corelation within the infant to account for ##
+##################################################################
+
+#create a subset of the main data dg63 with variables of analysis
+dg63_2<-dg63 %>% select(IDNUM,bvyes,IPNEUM,EARINFEC,STOOLBLD,
+                        ILYMPHAD,IDIARMON,ENCEPHAL,ISEPSIS,ICONJUNC,DEHYDRAT,
+                        GEDIARRH,GEVOMIT,WHEEZING,IHEPATOM,COLD,OTITIS,IHAIRYLP,
+                        STOOLBLD,IHOSPIT,CLINIC,IFEVER,ICOUGH,IDIARHEA,ORSLW,ITHRUSH,
+                        VOMIT,FEEDDIFF,HEATRASH,FUNGRASH,ECDERMAT,SCABIES,IORALULC)
+#head(dg63_2)
+
+dataModel1<-na.omit(dg63_2)##remove all missing data to work well with GEE
+
+modGEE<-geeglm(bvyes~IPNEUM+EARINFEC+STOOLBLD+
+                 ILYMPHAD+ENCEPHAL+ISEPSIS+ICONJUNC+DEHYDRAT+
+                 GEDIARRH+GEVOMIT+WHEEZING+IHEPATOM+COLD+OTITIS+
+                 STOOLBLD+IHOSPIT+CLINIC+IFEVER+ICOUGH+IDIARHEA+ORSLW+ITHRUSH+
+                 VOMIT+FEEDDIFF+HEATRASH+FUNGRASH+ECDERMAT+SCABIES+IORALULC, 
+               family=binomial(link="logit"),data =dataModel1,id = IDNUM,
+               corstr = "independence")
+summary(modGEE)
+coefi<-summary(modGEE)$coefficients[, 1]##exctract model coefficients
+se.err<-summary(modGEE)$coefficients[, 2] ##exctract the standard errors tocalculate the confidence interval
+oddsRatio<-exp(coefi) ##calculate the odds ratio by exponentiating the coefficients
+lowerCI<-exp(coefi-1.96*se.err) ##2.5% lower confidence interval
+upperCI<-exp(coefi+1.96*se.err)  ##97.5% upper bound
+oddsGEE<-cbind(oddsRatio,lowerCI,upperCI) #bind all the data together
+oddsGEE   ##the output
+
+###using GLM to compare the results
+###but since our method is about GEE, we only report results from the GEE output
+modGLM<-glm(bvyes~IPNEUM+EARINFEC+STOOLBLD+
+              ILYMPHAD+ENCEPHAL+ISEPSIS+ICONJUNC+DEHYDRAT+
+              GEDIARRH+GEVOMIT+WHEEZING+IHEPATOM+COLD+OTITIS+
+              STOOLBLD+IHOSPIT+CLINIC+IFEVER+ICOUGH+IDIARHEA+ORSLW+ITHRUSH+
+              VOMIT+FEEDDIFF+HEATRASH+FUNGRASH+ECDERMAT+SCABIES+IORALULC,
+            data =dataModel1,family = "binomial")
+summary(modGLM)
+exp(cbind("Odds ratio" = coef(modGLM), confint.default(modGLM, level = 0.95)))##calculate odds ratio from model adjusted
+printCrudeAndAdjustedModel(modGLM)[-1,] ##both unadjusted and adjusted odds ratio
